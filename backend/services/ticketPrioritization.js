@@ -1,73 +1,44 @@
-const { PrismaClient } = require('@prisma/client');
-const { OpenAIApi, Configuration } = require('openai');
-const Redis = require('ioredis');
+const { OpenAIApi, Configuration } = require("openai");
+const { PrismaClient } = require("@prisma/client");
+const Redis = require("ioredis");
 
 const prisma = new PrismaClient();
 const redis = new Redis();
-const openai = new OpenAIApi(new Configuration({
+
+const configuration = new Configuration({
   apiKey: process.env.OPENAI_API_KEY,
-}));
+});
+const openai = new OpenAIApi(configuration);
 
-async function prioritizeTicket(ticketId) {
+async function prioritizeTickets() {
   try {
-    const ticket = await prisma.ticket.findUnique({
-      where: { id: ticketId },
+    const tickets = await prisma.ticket.findMany({
+      where: { status: 'open' },
     });
 
-    if (!ticket) {
-      throw new Error('Ticket not found');
-    }
+    const ticketPrioritizationPromises = tickets.map(async (ticket) => {
+      const response = await openai.createCompletion({
+        model: "text-davinci-003",
+        prompt: `Prioritize this support ticket based on its content: ${ticket.content}`,
+        max_tokens: 10,
+      });
 
-    const sentimentAnalysis = await analyzeSentiment(ticket.description);
-    const urgencyScore = calculateUrgencyScore(ticket);
+      const priority = response.data.choices[0].text.trim();
+      await prisma.ticket.update({
+        where: { id: ticket.id },
+        data: { priority },
+      });
 
-    const priority = determinePriority(sentimentAnalysis, urgencyScore);
-
-    await prisma.ticket.update({
-      where: { id: ticketId },
-      data: { priority },
+      // Store the priority in Redis for quick access
+      await redis.set(`ticket:${ticket.id}:priority`, priority);
     });
 
-    await redis.set(`ticket:${ticketId}:priority`, priority);
-
-    return { ticketId, priority };
+    await Promise.all(ticketPrioritizationPromises);
   } catch (error) {
-    console.error('Error prioritizing ticket:', error);
-    throw new Error('Failed to prioritize ticket');
+    console.error("Error prioritizing tickets:", error);
   }
 }
 
-async function analyzeSentiment(description) {
-  try {
-    const response = await openai.createChatCompletion({
-      model: 'gpt-3.5-turbo',
-      messages: [{ role: 'user', content: `Analyze the sentiment of the following text: "${description}"` }],
-    });
-
-    const sentiment = response.data.choices[0].message.content.trim();
-    return sentiment;
-  } catch (error) {
-    console.error('Error analyzing sentiment:', error);
-    throw new Error('Sentiment analysis failed');
-  }
-}
-
-function calculateUrgencyScore(ticket) {
-  let score = 0;
-  if (ticket.isCritical) score += 5;
-  if (ticket.createdAt < new Date(Date.now() - 24 * 60 * 60 * 1000)) score += 3; // Older than 24 hours
-  if (ticket.customerType === 'premium') score += 2;
-  return score;
-}
-
-function determinePriority(sentiment, urgencyScore) {
-  if (sentiment.includes('urgent') || urgencyScore >= 5) {
-    return 'high';
-  } else if (urgencyScore >= 3) {
-    return 'medium';
-  } else {
-    return 'low';
-  }
-}
-
-module.exports = { prioritizeTicket };
+module.exports = {
+  prioritizeTickets,
+};
