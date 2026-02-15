@@ -1,0 +1,50 @@
+name: Deploy Application
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v2
+        with:
+          node-version: '16'
+
+      - name: Install dependencies
+        run: |
+          npm install
+          npm run build
+
+      - name: Set up PostgreSQL
+        uses: harmon758/postgresql-action@v1.0.0
+        with:
+          postgresql version: '13'
+          postgresql db: 'mydatabase'
+          postgresql user: 'myuser'
+          postgresql password: 'mypassword'
+
+      - name: Run Prisma Migrations
+        run: npx prisma migrate deploy
+
+      - name: Set up Redis
+        run: |
+          sudo apt-get install redis-server
+          sudo service redis-server start
+
+      - name: Deploy to Heroku
+        env:
+          HEROKU_API_KEY: ${{ secrets.HEROKU_API_KEY }}
+        run: |
+          git remote add heroku https://git.heroku.com/my-heroku-app.git
+          git push heroku main
+
+      - name: Notify Deployment Success
+        run: echo "Deployment to Heroku successful!"
